@@ -20,7 +20,13 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
-
+int GetPidNumber(){
+  int ans=0;
+  for(int i=0;i<NPROC;i++){
+    if(proc[i].state!=UNUSED)ans++;
+  }
+  return ans;
+}
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -93,7 +99,6 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -106,7 +111,7 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-
+  p->trace=0;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
@@ -292,7 +297,7 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
-
+  np->trace = p->trace;
   np->state = RUNNABLE;
 
   release(&np->lock);
