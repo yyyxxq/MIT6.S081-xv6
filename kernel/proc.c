@@ -34,14 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
+/*      char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      p->kstack = va;*/
   }
-  kvminithart();
+//  kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -93,7 +93,6 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -105,8 +104,17 @@ allocproc(void)
   return 0;
 
 found:
-  p->pid = allocpid();
 
+  p->krnl_pagetable = (pagetable_t) kalloc();
+  memset(p->krnl_pagetable,0,PGSIZE);
+  auto_kvmmap(p->krnl_pagetable);
+  char *pa = kalloc();
+  if(pa == 0)panic("kalloc");
+  //uint64 va = KSTACK((int) (p - proc));
+  uint64 va=TRAMPOLINE-2*PGSIZE;
+  kvmmap(p->krnl_pagetable,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  p->pid = allocpid();
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
@@ -133,12 +141,24 @@ found:
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
+
 static void
 freeproc(struct proc *p)
 {
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->krnl_pagetable){
+    auto_ukvmmap(p->krnl_pagetable);
+    uvmunmap(p->krnl_pagetable,0,PGROUNDUP(p->sz)/PGSIZE,0);
+  //kfree((void*)kvmpa(p->kstack,p->krnl_pagetable));
+    uvmunmap(p->krnl_pagetable,p->kstack,1,1);
+  //printf("yes\n");
+    uvmfree(p->krnl_pagetable,0);
+  }
+//  vmprint(p->krnl_pagetable);
+//  uvmfree(p->krnl_pagetable, 0);
+  p->krnl_pagetable=0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -220,7 +240,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
-
+  vmcopypage(p->pagetable,p->krnl_pagetable,0,p->sz);
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -274,7 +294,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  vmcopypage(np->pagetable,np->krnl_pagetable,0,np->sz);
   np->parent = p;
 
   // copy saved user registers.
@@ -473,8 +493,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->krnl_pagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
-
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
