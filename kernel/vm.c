@@ -110,7 +110,23 @@ walkaddr(pagetable_t pagetable, uint64 va)
   pa = PTE2PA(*pte);
   return pa;
 }
+pte_t*
+walkpte(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
 
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return pte;
+}
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -305,13 +321,14 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+int getmemref(uint64 pa);
+int addmemref(uint64 pa);
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +336,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = (PTE_FLAGS(*pte)&(~PTE_W))|PTE_COW;
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
+    *pte=((*pte)&(~PTE_W))|PTE_COW;
+    addmemref(pa);
   }
   return 0;
 
@@ -358,9 +373,27 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    pte_t* pte=walkpte(pagetable,va0);
+    if(pte==0)return -1;//no pte
+    pa0=PTE2PA(*pte);
+    if((*pte&PTE_W)==0){
+      if((*pte&PTE_COW)==0)return -1;//no cow
+      if(getmemref(pa0)==1){
+        *pte|=PTE_W;//only one ref
+        *pte&=~(PTE_COW);
+      }else{
+        uint flag=(PTE_FLAGS(*pte)|(PTE_W))&(~PTE_COW);
+        char*mem=kalloc();
+        if(mem==0){
+          return -1;
+        }else{
+          memmove(mem,(char*)pa0,PGSIZE);
+          *pte=PA2PTE((uint64)mem)|flag;
+          kfree((void*)pa0);
+          pa0=(uint64)mem;
+        }
+      }
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
