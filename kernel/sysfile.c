@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "vma.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -483,4 +484,70 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+struct vma;
+uint64 sys_mmap(void){
+  struct vma *now;
+  struct proc *p=myproc();
+  int length,prot,flags,fd;
+  if(argint(1,&length)<0||argint(2,&prot)<0||argint(3,&flags)<0||argint(4,&fd)<0)
+    return -1;
+  if(!p->ofile[fd]->readable){
+    if(prot&PROT_READ)return -1;
+  }
+  if(!p->ofile[fd]->writable){
+    if(prot&PROT_WRITE&&flags==MAP_SHARED)
+      return -1;
+  }
+  if((now=vma_alloc())==0)return -1;
+  acquire(&p->lock); 
+  for(int i=0;i<16;i++){
+    if(p->vma[i]==0){
+      p->vma[i]=now;
+      release(&p->lock);
+      break;
+    }
+    if(i==15)return -1;
+  }
+  uint64 sz=p->sz;
+  if(lazy_grow_proc(length)<0)return -1;
+  now->addr=(char *)sz;
+  now->length=length;
+  now->prot=(prot&PROT_READ)|(prot&PROT_WRITE);
+  now->flags=flags;
+  now->file=p->ofile[fd];
+  filedup(p->ofile[fd]);
+  return sz;
+}
+uint64 sys_munmap(void){
+  struct proc *p=myproc();
+  int staddr,length;
+  if(argint(0,&staddr)<0||argint(1,&length)<0)return -1;
+  for(int i=0;i<16;i++){
+    if(p->vma[i]==0)continue;
+    if((uint64)p->vma[i]->addr==staddr){
+      if(length>=p->vma[i]->length){
+        length=p->vma[i]->length;
+      }
+      if(p->vma[i]->prot&PROT_WRITE&&p->vma[i]->flags==MAP_SHARED){
+        begin_op();
+        ilock(p->vma[i]->file->ip);
+        writei(p->vma[i]->file->ip,1,(uint64)staddr,0,length);
+        iunlock(p->vma[i]->file->ip);
+        end_op();
+      }
+      uvmunmap(p->pagetable,PGROUNDDOWN((uint64)staddr),(length+staddr-PGROUNDDOWN(staddr))/PGSIZE,1);
+      if(length==p->vma[i]->length){
+        fileclose(p->vma[i]->file);
+        vma_free(p->vma[i]);
+        p->vma[i]=0;
+        return 0;
+      }else{
+        p->vma[i]->addr+=length;
+        p->vma[i]->length-=length;
+        return 0;
+      }
+    } 
+  }
+  return -1;
 }

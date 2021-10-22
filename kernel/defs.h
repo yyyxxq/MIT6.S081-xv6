@@ -9,6 +9,11 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+// vma.c
+struct          vma;
+void            vma_init(void);
+struct vma*     vma_alloc(void);
+void            vma_free(struct vma*);
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -86,6 +91,7 @@ int             cpuid(void);
 void            exit(int);
 int             fork(void);
 int             growproc(int);
+int             lazy_grow_proc(int);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);

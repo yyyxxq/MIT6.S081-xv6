@@ -5,6 +5,11 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "vma.h"
+#include "fcntl.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -286,7 +291,18 @@ fork(void)
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
-
+  for(int i=0;i<NOFILE;i++){
+    if(p->vma[i]){
+      np->vma[i]=vma_alloc();
+      np->vma[i]->addr=p->vma[i]->addr;
+      np->vma[i]->length=p->vma[i]->length;
+      np->vma[i]->prot=p->vma[i]->prot;
+      np->vma[i]->flags=p->vma[i]->flags;
+      np->vma[i]->file=p->vma[i]->file;
+      np->vma[i]->used=p->vma[i]->used;
+      filedup(p->vma[i]->file);
+    }
+  }
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
@@ -332,7 +348,11 @@ reparent(struct proc *p)
     }
   }
 }
-
+int lazy_grow_proc(int n){
+  struct proc *p=myproc();
+  p->sz=p->sz+n;
+  return 0;
+}
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
@@ -344,6 +364,21 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for(int i=0;i<NOFILE;i++){
+    if(p->vma[i]){
+      struct vma *vma=p->vma[i];
+      if(vma->prot&PROT_WRITE&&vma->flags==MAP_SHARED){
+        begin_op();
+        ilock(vma->file->ip);
+        writei(vma->file->ip,1,(uint64)vma->addr,0,vma->length);
+        iunlock(vma->file->ip);
+        end_op();
+      }
+      fileclose(vma->file);
+      vma_free(vma);
+      p->vma[i]=0;
+    }
+  }
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
