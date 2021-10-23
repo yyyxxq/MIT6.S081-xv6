@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "net.h": "c",
+        "e1000_dev.h": "c",
+        "spinlock.h": "c",
+        "chrono": "c"
+    }
+}
